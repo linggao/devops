@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Deploy the management hub services (agbot, exchange, css, sdo, postgre, mongo), the agent, and the CLI on the current host.
+# Deploy the management hub services (agbot, exchange, css, sdo, fdo, postgre, mongo), the agent, and the CLI on the current host.
 
 usage() {
     exitCode=${1:-0}
@@ -206,9 +206,32 @@ export SDO_OPS_EXTERNAL_PORT=${SDO_OPS_EXTERNAL_PORT:-$SDO_OPS_PORT}   # the ext
 export SDO_OCS_DB_PATH=${SDO_OCS_DB_PATH:-/home/sdouser/ocs/config/db}
 export SDO_GET_PKGS_FROM=${SDO_GET_PKGS_FROM:-https://github.com/open-horizon/anax/releases/latest/download}   # where the SDO container gets the horizon pkgs and agent-install.sh from.
 export SDO_GET_CFG_FILE_FROM=${SDO_GET_CFG_FILE_FROM:-css:}   # or can be set to 'agent-install.cfg' to use the file SDO creates (which doesn't include HZN_AGBOT_URL)
+
 export EXCHANGE_INTERNAL_RETRIES=${EXCHANGE_INTERNAL_RETRIES:-12}   # the maximum number of times to try connecting to the exchange during startup to verify the connection info
 export EXCHANGE_INTERNAL_INTERVAL=${EXCHANGE_INTERNAL_INTERVAL:-5}   # the number of seconds to wait between attempts to connect to the exchange during startup
 # Note: in this environment, we are not supporting letting them specify their own owner key pair (only using the built-in sample key pair)
+
+export FDO_IMAGE_NAME=${FDO_IMAGE_NAME:-openhorizon/fdo-owner-services}
+export FDO_IMAGE_TAG=${FDO_IMAGE_TAG:-testing}   # or can be set to stable, testing, or a specific version
+export FDO_OCS_SVC_PORT=${FDO_OCS_SVC_PORT:-9009}
+export FDO_RV_URL=${FDO_RV_URL:-http://sdo.lfedge.iol.unh.edu:80}
+export FDO_API_PWD=${FDO_API_PWD:-apiUser:123456}
+#export FDO_OCS_SVC_HOST=${FDO_OCS_SVC_HOST:-169.55.186.242}
+export FDO_OCS_DB_PATH=${FDO_OCS_DB_PATH:-/home/fdouser/ocs/config/db}
+export FDO_DB_USER=${FDO_DB_USER:-fdouser}
+export FDO_DB_PASSWORD=${FDO_DB_PASSWORD:-fdouser}
+export FDO_DB_URL=${FDO_DB_URL:-jdbc:postgresql://0.0.0.0:5432/fdo}
+export FDO_GET_PKGS_FROM=${FDO_GET_PKGS_FROM:-https://github.com/open-horizon/anax/releases/latest/download}   # where the FDO container gets the horizon pkgs and agent-install.sh from.
+export FDO_GET_CFG_FILE_FROM=${FDO_GET_CFG_FILE_FROM:-css:}   # or can be set to 'agent-install.cfg' to use the file FDO creates (which doesn't include HZN_AGBOT_URL)
+export HZN_FDO_SVC_URL=${HZN_TRANSPORT}://${HZN_LISTEN_IP}:${FDO_OCS_SVC_PORT}
+export FDO_OPS_PORT=${FDO_OPS_PORT:-8042}   # the port OPS should listen on *inside* the container
+export FDO_OPS_EXTERNAL_PORT=${FDO_OPS_EXTERNAL_PORT:-$FDO_OPS_PORT}   # the external port the device should use to contact OPS
+export FDO_OCS_SVC_TLS_PORT=${FDO_OCS_SVC_TLS_PORT:-$FDO_OCS_SVC_PORT}
+export FDO_OPS_HOST=${FDO_OPS_HOST:-$(hostname)}   # currently only used for OPS
+export HZN_FDO_API_URL="http://"$FDO_OPS_HOST":"$FDO_OPS_PORT
+export FDO_SVC_CERT_PATH=${FDO_SVC_CERT_PATH:-/home/fdouser/ocs-api-dir/keys}
+export FDO_RV_VOUCHER_TTL=${FDO_RV_VOUCHER_TTL:-7200}
+
 
 export VAULT_AUTH_PLUGIN_EXCHANGE=openhorizon-exchange
 export VAULT_PORT=${VAULT_PORT:-8200}
@@ -498,6 +521,7 @@ pullImages() {
     pullDockerImage ${POSTGRES_IMAGE_NAME}:${POSTGRES_IMAGE_TAG}
     pullDockerImage ${MONGO_IMAGE_NAME}:${MONGO_IMAGE_TAG}
     pullDockerImage ${SDO_IMAGE_NAME}:${SDO_IMAGE_TAG}
+    pullDockerImage ${FDO_IMAGE_NAME}:${FDO_IMAGE_TAG}
     pullDockerImage ${VAULT_IMAGE_NAME}:${VAULT_IMAGE_TAG}
 }
 
@@ -619,7 +643,7 @@ createKeyAndCert() {   # create in directory $CERT_DIR a self-signed key and cer
     chk $? "making directory $CERT_DIR"
     removeKeyAndCert
     local altNames=$(ip address | grep -o -E "\sinet [^/\s]*" | awk -vORS=,IP: '{ print $2 }' | sed -e 's/^/IP:/' -e 's/,IP:$//')   # result: IP:127.0.0.1,IP:10.21.42.91,...
-    altNames="$altNames,DNS:localhost,DNS:agbot,DNS:exchange-api,DNS:css-api,DNS:sdo-owner-services"   # add the names the containers use to contact each other
+    altNames="$altNames,DNS:localhost,DNS:agbot,DNS:exchange-api,DNS:css-api,DNS:sdo-owner-services,DNS:fdo-owner-services"   # add the names the containers use to contact each other
     echo "Creating self-signed certificate for these IP addresses: $altNames"
     # taken from https://medium.com/@groksrc/create-an-openssl-self-signed-san-cert-in-a-single-command-627fd771f25
     openssl req -newkey rsa:4096 -nodes -sha256 -x509 -keyout $CERT_DIR/$CERT_BASE_NAME.key -days 365 -out $CERT_DIR/$CERT_BASE_NAME.crt -subj "/C=US/ST=NY/L=New York/O=allin1@openhorizon.org/CN=$(hostname)" -extensions san -config <(echo '[req]'; echo 'distinguished_name=req'; echo '[san]'; echo "subjectAltName=$altNames")
@@ -902,7 +926,7 @@ if [[ $HZN_TRANSPORT == 'https' ]]; then
 
     export CSS_LISTENING_TYPE=secure
 
-    export HZN_MGMT_HUB_CERT=$(cat $CERT_DIR/$CERT_BASE_NAME.crt)   # for sdo ocs-api to be able to contact the exchange
+    export HZN_MGMT_HUB_CERT=$(cat $CERT_DIR/$CERT_BASE_NAME.crt)   # for sdo/fdo ocs-api to be able to contact the exchange
 else
     removeKeyAndCert   # so when we mount CERT_DIR to the containers it will be empty
     export CSS_LISTENING_TYPE=unsecure
@@ -1007,7 +1031,7 @@ if [[ -n "$STOP" ]]; then
 
     if [[ -n "$PURGE" && $KEEP_DOCKER_IMAGES != 'true' ]]; then   # KEEP_DOCKER_IMAGES is a hidden env var for convenience while developing this script
         echo "Removing Open-horizon Docker images..."
-        runCmdQuietly docker rmi ${AGBOT_IMAGE_NAME}:${AGBOT_IMAGE_TAG} ${EXCHANGE_IMAGE_NAME}:${EXCHANGE_IMAGE_TAG} ${CSS_IMAGE_NAME}:${CSS_IMAGE_TAG} ${POSTGRES_IMAGE_NAME}:${POSTGRES_IMAGE_TAG} ${MONGO_IMAGE_NAME}:${MONGO_IMAGE_TAG} ${SDO_IMAGE_NAME}:${SDO_IMAGE_TAG} ${VAULT_IMAGE_NAME}:${VAULT_IMAGE_TAG}
+        runCmdQuietly docker rmi ${AGBOT_IMAGE_NAME}:${AGBOT_IMAGE_TAG} ${EXCHANGE_IMAGE_NAME}:${EXCHANGE_IMAGE_TAG} ${CSS_IMAGE_NAME}:${CSS_IMAGE_TAG} ${POSTGRES_IMAGE_NAME}:${POSTGRES_IMAGE_TAG} ${MONGO_IMAGE_NAME}:${MONGO_IMAGE_TAG} ${SDO_IMAGE_NAME}:${SDO_IMAGE_TAG} ${FDO_IMAGE_NAME}:${FDO_IMAGE_TAG} ${VAULT_IMAGE_NAME}:${VAULT_IMAGE_TAG}
     fi
     exit
 fi
@@ -1263,6 +1287,7 @@ HZN_EXCHANGE_URL=${HZN_TRANSPORT}://${THIS_HOST_LISTEN_IP}:$EXCHANGE_PORT/v1
 HZN_FSS_CSSURL=${HZN_TRANSPORT}://${THIS_HOST_LISTEN_IP}:$CSS_PORT/
 HZN_AGBOT_URL=${HZN_TRANSPORT}://${THIS_HOST_LISTEN_IP}:$AGBOT_SECURE_PORT
 HZN_SDO_SVC_URL=${HZN_TRANSPORT}://${THIS_HOST_LISTEN_IP}:$SDO_OCS_API_PORT/api
+HZN_FDO_SVC_URL=${HZN_TRANSPORT}://${THIS_HOST_LISTEN_IP}:$FDO_OCS_SVC_PORT/api
 HZN_DEVICE_ID=$HZN_DEVICE_ID
 ANAX_LOG_LEVEL=$ANAX_LOG_LEVEL
 EOF
@@ -1310,6 +1335,7 @@ HZN_EXCHANGE_URL=${HZN_TRANSPORT}://${CFG_LISTEN_IP}:$EXCHANGE_PORT/v1
 HZN_FSS_CSSURL=${HZN_TRANSPORT}://${CFG_LISTEN_IP}:$CSS_PORT/
 HZN_AGBOT_URL=${HZN_TRANSPORT}://${CFG_LISTEN_IP}:$AGBOT_SECURE_PORT
 HZN_SDO_SVC_URL=${HZN_TRANSPORT}://${CFG_LISTEN_IP}:$SDO_OCS_API_PORT/api
+HZN_FDO_SVC_URL=${HZN_TRANSPORT}://${CFG_LISTEN_IP}:$FDO_OCS_SVC_PORT/api
 EOF
 
 if [[ $HZN_TRANSPORT == 'https' ]]; then
